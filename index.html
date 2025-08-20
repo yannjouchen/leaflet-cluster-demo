@@ -98,7 +98,7 @@
     function randomInRange(min, max) { return Math.random() * (max - min) + min; }
     const center = map.getCenter();
     const demoMarkers = [];
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < 30; i++) {
       // 大約 +/- 0.01 度緯經度（~1km 級距，示意用）
       const lat = center.lat + randomInRange(-0.02, 0.02);
       const lng = center.lng + randomInRange(-0.02, 0.02);
