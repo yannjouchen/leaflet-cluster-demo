@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>Leaflet.markercluster 固定地理半徑示範</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+    .toolbar {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 12px;
+      background: rgba(255,255,255,0.92);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .toolbar label { font-size: 14px; color: #333; }
+    .toolbar input[type="number"] {
+      width: 110px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #d0d7de;
+      font-size: 14px;
+    }
+    .toolbar .stat {
+      font-size: 12px;
+      color: #666;
+      line-height: 1.2;
+    }
+    .pill {
+      background: #f1f5f9;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: #334155;
+      border: 1px solid #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="toolbar">
+    <label>
+      聚合半徑（公尺）：
+      <input id="radiusMeters" type="number" min="10" step="10" value="300" />
+    </label>
+    <span class="pill">zoom: <span id="zoomVal">-</span></span>
+    <div class="stat">
+      <div>1px ≈ <span id="mPerPx">-</span> m</div>
+      <div>像素半徑 ≈ <span id="pxRadius">-</span> px</div>
+    </div>
+  </div>
+
+  <script>
+    // --- 基本地圖 ---
+    const map = L.map('map').setView([25.033964, 121.564468], 13); // 台北 101 附近
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // --- 工具函式：把公尺換成像素（Web Mercator）---
+    // 每像素公尺數（m/px）公式： 156543.03392 * cos(lat) / 2^zoom
+    function metersPerPixelAtLat(lat, zoom) {
+      return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+    }
+    // 把「公尺半徑」換成「像素半徑」
+    function metersToPixels(meters, lat, zoom) {
+      const mPerPx = metersPerPixelAtLat(lat, zoom);
+      return meters / mPerPx;
+    }
+
+    // --- 介面元件 ---
+    const radiusInput = document.getElementById('radiusMeters');
+    const zoomVal = document.getElementById('zoomVal');
+    const mPerPxEl = document.getElementById('mPerPx');
+    const pxRadiusEl = document.getElementById('pxRadius');
+
+    // --- 示範資料：在中心附近隨機灑點 ---
+    function randomInRange(min, max) { return Math.random() * (max - min) + min; }
+    const center = map.getCenter();
+    const demoMarkers = [];
+    for (let i = 0; i < 300; i++) {
+      // 大約 +/- 0.01 度緯經度（~1km 級距，示意用）
+      const lat = center.lat + randomInRange(-0.02, 0.02);
+      const lng = center.lng + randomInRange(-0.02, 0.02);
+      demoMarkers.push(L.marker([lat, lng]));
+    }
+
+    // --- 圖層：Cluster（用地理半徑換像素半徑） ---
+    let targetMeters = Number(radiusInput.value);
+    const clusterGroup = L.markerClusterGroup({
+      maxClusterRadius: function(zoom) {
+        const lat = map.getCenter().lat;
+        const px = metersToPixels(targetMeters, lat, zoom);
+        return Math.max(1, Math.round(px)); // 至少 1px
+      },
+      // 額外：避免太容易合併，也可視需求調整
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+    });
+
+    demoMarkers.forEach(m => clusterGroup.addLayer(m));
+    map.addLayer(clusterGroup);
+
+    // --- 視覺化半徑：畫一個 L.circle（公尺半徑） ---
+    let radiusCircle = L.circle(map.getCenter(), {
+      radius: targetMeters,
+      color: '#2563eb',
+      weight: 2,
+      opacity: 0.9,
+      fillColor: '#3b82f6',
+      fillOpacity: 0.08
+    }).addTo(map);
+
+    // --- 更新資訊面板 ---
+    function refreshStats() {
+      const zoom = map.getZoom();
+      const lat = map.getCenter().lat;
+      const mpp = metersPerPixelAtLat(lat, zoom);
+      const px = metersToPixels(targetMeters, lat, zoom);
+      zoomVal.textContent = zoom.toFixed(0);
+      mPerPxEl.textContent = mpp.toFixed(2);
+      pxRadiusEl.textContent = px.toFixed(1);
+    }
+
+    // --- 在縮放 / 移動 / 半徑改動時更新 ---
+    function updateAll() {
+      // 需要重新計算 maxClusterRadius → 重新觸發重繪
+      clusterGroup.refreshClusters();
+      // 更新視覺圈與資訊
+      radiusCircle.setLatLng(map.getCenter());
+      radiusCircle.setRadius(targetMeters);
+      refreshStats();
+    }
+
+    map.on('zoomend moveend', updateAll);
+
+    radiusInput.addEventListener('input', () => {
+      targetMeters = Math.max(1, Number(radiusInput.value) || 1);
+      updateAll();
+    });
+
+    // 初始
+    refreshStats();
+  </script>
+</body>
+</html>
