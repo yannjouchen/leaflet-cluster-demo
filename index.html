@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>Leaflet.markercluster – 多邊形範圍 + 30人示範</title>
+  <title>Leaflet.markercluster – 100人（20m 聚集 >10 顯示紅色，其餘黃色）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Leaflet -->
@@ -18,167 +18,130 @@
     html, body { height: 100%; margin: 0; }
     #map { height: 100%; }
 
-    .toolbar {
-      position: absolute; z-index: 1000; top: 12px; left: 12px;
-      background: rgba(255,255,255,0.92); box-shadow: 0 6px 20px rgba(0,0,0,0.15);
-      border-radius: 12px; padding: 10px 12px;
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, "PingFang TC", "Microsoft JhengHei", sans-serif;
-      display: flex; gap: 12px; align-items: center;
+    /* 單一人員 marker（DivIcon 小圓點） -> 黃色 */
+    .pin {
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25);
+      background: #f59e0b; /* 黃色 */
     }
-    .pill { background: #f1f5f9; border-radius: 999px; padding: 4px 8px; font-size: 12px; color: #334155; border: 1px solid #e2e8f0; }
-    .stat { font-size: 12px; color: #666; line-height: 1.2; }
 
-    /* 以 DivIcon 畫圓點（可被 cluster 支援） */
-    .pin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
-    .pin.blue { background: #3b82f6; }
-    .pin.red  { background: #ef4444; }
+    /* 小資訊面板 */
+    .info {
+      position: absolute; z-index: 1000; top: 12px; left: 12px;
+      background: rgba(255,255,255,0.94); border-radius: 10px; padding: 8px 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "PingFang TC", "Microsoft JhengHei", sans-serif;
+      font-size: 13px; color: #222;
+    }
+    .info b { color: #111; }
+
+    /* 自訂 cluster 顏色：
+       - 其餘（<=10）→ 黃色
+       - >20m不影響顏色，顏色只看人數，半徑由 maxClusterRadius 控制
+       - >10 → 紅色
+    */
+    .marker-cluster-yellow {
+      background-color: rgba(245, 158, 11, 0.6);
+      border: 3px solid #f59e0b;
+      color: #1f2937;
+    }
+    .marker-cluster-yellow div {
+      background: #f59e0b;
+      color: #1f2937;
+    }
+
+    .marker-cluster-red {
+      background-color: rgba(239, 68, 68, 0.6);
+      border: 3px solid #ef4444;
+      color: #fff;
+    }
+    .marker-cluster-red div {
+      background: #ef4444;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
-
-  <div class="toolbar">
-    <span class="pill">zoom: <span id="zoomVal">-</span></span>
-    <div class="stat">
-      <div>1px ≈ <span id="mPerPx">-</span> m</div>
-      <div>紅：<b>10</b> 人（20m 內）／藍：<b>20</b> 人（皆限制在多邊形範圍）</div>
-    </div>
+  <div class="info">
+    隨機人員：<b>100</b> 人（中心約 800m 內）<br/>
+    聚合半徑：<b>20 公尺</b>（動態換算像素）<br/>
+    群集 <b>&gt; 10</b> 人 → <span style="color:#ef4444;font-weight:bold;">紅色</span>；其餘 <span style="color:#f59e0b;font-weight:bold;">黃色</span>
   </div>
 
   <script>
-    // --- 基本地圖（中心點） ---
-    const map = L.map('map').setView([22.96834, 120.16625], 17);
+    // ====== 參數設定 ======
+    const MAP_CENTER = [22.96834, 120.16625]; // 固定中心
+    const PEOPLE_COUNT = 100;                  // 隨機 100 人
+    const SCATTER_RADIUS_M = 200;              // 亂數散佈半徑（相對中心）
+    const CLUSTER_RADIUS_M = 20;               // 用 20m 當作聚合半徑（轉像素）
+
+    // ====== 地圖初始化 ======
+    const map = L.map('map').setView(MAP_CENTER, 16);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 20, attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    // --- 你指定的多邊形（請依順序給點） ---
-    const POLY_COORDS = [
-      [22.969464, 120.164425],
-      [22.970719, 120.166699],
-      [22.968328, 120.168513],
-      [22.967261, 120.166131]
-    ];
-    const polygon = L.polygon(POLY_COORDS, {
-      color: '#10b981', weight: 2, fillColor: '#10b981', fillOpacity: 0.08
-    }).addTo(map);
-    map.fitBounds(polygon.getBounds(), { padding: [20, 20] });
-
-    // --- 公式：公尺 <-> 像素（Web Mercator）---
+    // ====== 公尺 <-> 像素換算（Web Mercator 近似） ======
     function metersPerPixelAtLat(lat, zoom) {
       return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
     }
-
-    // --- 幾何工具：點是否在多邊形內（lat-lng 平面近似；四邊形OK）---
-    // Ray-casting 演算法
-    function pointInPolygon(lat, lng, poly) {
-      let inside = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i][0], yi = poly[i][1];
-        const xj = poly[j][0], yj = poly[j][1];
-        const intersect = ((yi > lng) !== (yj > lng)) &&
-                          (lat < (xj - xi) * (lng - yi) / (yj - yi + 1e-12) + xi);
-        if (intersect) inside = !inside;
-      }
-      return inside;
+    function metersToPixels(meters, lat, zoom) {
+      return meters / metersPerPixelAtLat(lat, zoom);
     }
 
-    // --- 產生在某座標「半徑 R 公尺內」的隨機點 ---
-    function randomPointWithinMeters(center, radiusMeters) {
-      const d = Math.random() * radiusMeters;          // 0..R（公尺）
-      const theta = Math.random() * 2 * Math.PI;       // 0..2π
-      const dLat = (d * Math.cos(theta)) / 111320;     // 粗略換算
-      const dLng = (d * Math.sin(theta)) / (111320 * Math.cos(center.lat * Math.PI / 180));
-      return L.latLng(center.lat + dLat, center.lng + dLng);
+    // ====== 以中心為圓心，R 公尺內亂數取點 ======
+    function randomPointWithinMeters(centerLatLng, radiusMeters) {
+      const d = Math.random() * radiusMeters;     // 0..R（m）
+      const theta = Math.random() * 2 * Math.PI;  // 0..2π
+      const dLat = (d * Math.cos(theta)) / 111320;
+      const dLng = (d * Math.sin(theta)) / (111320 * Math.cos(centerLatLng.lat * Math.PI / 180));
+      return L.latLng(centerLatLng.lat + dLat, centerLatLng.lng + dLng);
     }
 
-    // --- 在多邊形內隨機取點（由外框 bbox 反覆抽樣直到命中） ---
-    function randomPointInPolygon(poly) {
-      const lats = poly.map(p => p[0]);
-      const lngs = poly.map(p => p[1]);
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-      const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-      for (let t = 0; t < 2000; t++) {
-        const lat = minLat + Math.random() * (maxLat - minLat);
-        const lng = minLng + Math.random() * (maxLng - minLng);
-        if (pointInPolygon(lat, lng, poly)) return L.latLng(lat, lng);
-      }
-      // 極端狀況回傳多邊形中心
-      const c = polygon.getBounds().getCenter();
-      return L.latLng(c.lat, c.lng);
+    // ====== 建立 100 個人員點 ======
+    function makeDotIcon() {
+      return L.divIcon({ className: '', html: `<div class="pin"></div>`, iconSize: [12,12], iconAnchor: [6,6] });
     }
-
-    // --- 在「中心點 20m 內」且「必須落在多邊形內」取點 ---
-    function randomNearCenterInPolygon(center, meters, poly, maxTry = 2000) {
-      for (let i = 0; i < maxTry; i++) {
-        const p = randomPointWithinMeters(center, meters);
-        if (pointInPolygon(p.lat, p.lng, poly)) return p;
-      }
-      // 若多次仍失敗，退而求其次：多邊形內任意點
-      return randomPointInPolygon(poly);
-    }
-
-    // --- Icon 工具 ---
-    function makeDivIcon(cls) {
-      return L.divIcon({ className: '', html: `<div class="pin ${cls}"></div>`, iconSize: [12,12], iconAnchor: [6,6] });
-    }
-    const redIcon  = makeDivIcon('red');
-    const blueIcon = makeDivIcon('blue');
-
-    // --- 生成 30 人：10 人在 20m（紅），20 人在多邊形內（藍） ---
-    const CENTER = map.getCenter();   // 以視圖中心為基準（多邊形內）
-    const NEAR_RADIUS_M = 20;
+    const personIcon = makeDotIcon();
     const peopleMarkers = [];
+    const centerLL = L.latLng(MAP_CENTER[0], MAP_CENTER[1]);
 
-    // 10 人（20m 內且在多邊形內）
-    for (let i = 0; i < 10; i++) {
-      const p = randomNearCenterInPolygon(CENTER, NEAR_RADIUS_M, POLY_COORDS);
-      peopleMarkers.push(L.marker(p, { icon: redIcon }).bindPopup(`紅色（20m 內）#${i+1}`));
-    }
-    // 20 人（多邊形內任意）
-    for (let i = 0; i < 20; i++) {
-      const p = randomPointInPolygon(POLY_COORDS);
-      peopleMarkers.push(L.marker(p, { icon: blueIcon }).bindPopup(`藍色（多邊形內）#${i+1}`));
+    for (let i = 0; i < PEOPLE_COUNT; i++) {
+      const p = randomPointWithinMeters(centerLL, SCATTER_RADIUS_M);
+      peopleMarkers.push(L.marker(p, { icon: personIcon }).bindPopup(`人員 #${i+1}`));
     }
 
-    // --- Cluster：固定公尺概念不再需要輸入，改用預設 80px 或自訂 ---
-    // 若仍想用「公尺」概念控制聚合半徑，可把函式恢復（示範保留 300m 轉像素）
-    const targetMeters = 300;
+    // ====== Cluster：maxClusterRadius = 20m (轉像素)；>10 人顯示紅色，其餘黃色 ======
     const clusterGroup = L.markerClusterGroup({
       maxClusterRadius: function(zoom) {
-        const mPerPx = metersPerPixelAtLat(map.getCenter().lat, zoom);
-        const px = targetMeters / mPerPx;
+        const px = metersToPixels(CLUSTER_RADIUS_M, map.getCenter().lat, zoom);
         return Math.max(1, Math.round(px));
       },
       spiderfyOnMaxZoom: true,
       showCoverageOnHover: false,
+
+      iconCreateFunction: function (cluster) {
+        const count = cluster.getChildCount();
+
+        // 以人數決定顏色：>10 紅，其他黃
+        const colorClass = (count > 10) ? ' marker-cluster-red' : ' marker-cluster-yellow';
+
+        // 用 size 類別保留原外觀尺寸（small/medium/large 只是大小，不代表顏色）
+        let sizeClass = ' marker-cluster-small';
+        if (count > 10 && count <= 50) sizeClass = ' marker-cluster-medium';
+        if (count > 50) sizeClass = ' marker-cluster-large';
+
+        return new L.DivIcon({
+          html: `<div><span>${count}</span></div>`,
+          className: 'marker-cluster' + sizeClass + colorClass,
+          iconSize: new L.Point(40, 40)
+        });
+      }
     });
 
     peopleMarkers.forEach(m => clusterGroup.addLayer(m));
     map.addLayer(clusterGroup);
-
-    // --- 視覺化：20m 的紅圈（幫助確認近距離分佈） ---
-    const nearCircle = L.circle(CENTER, {
-      radius: NEAR_RADIUS_M, color: '#ef4444', weight: 2, opacity: 0.9,
-      fillColor: '#ef4444', fillOpacity: 0.08
-    }).addTo(map);
-
-    // --- 顯示 zoom / mPerPx ---
-    const zoomVal = document.getElementById('zoomVal');
-    const mPerPxEl = document.getElementById('mPerPx');
-    function refreshStats() {
-      const z = map.getZoom();
-      const mpp = metersPerPixelAtLat(map.getCenter().lat, z);
-      zoomVal.textContent = z.toFixed(0);
-      mPerPxEl.textContent = mpp.toFixed(2);
-    }
-    function updateAll() {
-      clusterGroup.refreshClusters();
-      nearCircle.setLatLng(map.getCenter());
-      refreshStats();
-    }
-    map.on('zoomend moveend', updateAll);
-    refreshStats();
   </script>
 </body>
 </html>
